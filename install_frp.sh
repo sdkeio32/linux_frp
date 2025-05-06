@@ -52,7 +52,7 @@ main(){
   [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
   # 获取公网IP
   SERVER_IP=$(curl -s https://api.ipify.org)
-  # 清理旧服务
+  # 停止并清理旧服务
   systemctl is-active --quiet frps && systemctl stop frps
   if systemctl list-unit-files | grep -Fq frps.service; then
     systemctl disable frps
@@ -98,28 +98,25 @@ EOF
   fi
 
   install -m755 frps /usr/local/bin/frps
+    # 配置防火墙开放端口范围 39000-40000（无需启用或重启防火墙）
+  if command -v ufw >/dev/null; then
+    ufw allow 39000:40000/tcp
+    ufw allow 39000:40000/udp
+  elif command -v firewall-cmd >/dev/null; then
+    firewall-cmd --add-port=39000-40000/tcp --permanent
+    firewall-cmd --add-port=39000-40000/udp --permanent
+  else
+    iptables -I INPUT -p tcp --dport 39000:40000 -j ACCEPT
+    iptables -I INPUT -p udp --dport 39000:40000 -j ACCEPT
+  fi
+
   cat > /etc/systemd/system/frps.service <<-EOF
-[Unit]
-Description=FRP Server (frps)
-After=network.target
-
-[Service]
-Type=simple
-ExecStart=/usr/local/bin/frps -c $INSTALL_DIR/frps.toml
-Restart=on-failure
-LimitNOFILE=65536
-WorkingDirectory=$INSTALL_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
-  systemctl daemon-reload
   systemctl enable --now frps
 
   echo -e "\n🎉 FRP 服务端 安装完成！"
   echo "• 配置：$INSTALL_DIR/frps.toml"
   echo "• 日志：$INSTALL_DIR/frps.log"
-  echo "• 查看状态：systemctl status frps"
+  echo "• 状态：systemctl status frps"
   echo -e "\n👉 客户端示例 frpc.toml:\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39501\nremote_port = 39501"
 }
 
