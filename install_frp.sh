@@ -1,72 +1,113 @@
 #!/usr/bin/env bash
-#================================================================
-# FRP 服务端 卸载脚本 —— 停用并删除所有 frp 相关内容
-# 适用：Debian/Ubuntu, CentOS/RHEL, Alpine, Fedora…
-# 使用：curl -sL <脚本地址> | sudo bash
-#================================================================
+set -e
 
-set -euo pipefail
+# 只允许 root 运行
+if [ "$EUID" -ne 0 ]; then
+  echo "请以 root 或 sudo 权限运行此脚本"
+  exit 1
+fi
 
-echo "ℹ️ 正在卸载所有 frp 相关内容…"
+# 1. 检测并安装 curl、tar
+echo "检测并安装 curl、tar……"
+if   command -v apt-get   >/dev/null 2>&1; then
+    apt-get update
+    apt-get install -y curl tar
+elif command -v yum       >/dev/null 2>&1; then
+    yum install -y curl tar
+elif command -v dnf       >/dev/null 2>&1; then
+    dnf install -y curl tar
+elif command -v apk       >/dev/null 2>&1; then
+    apk add --no-cache curl tar
+elif command -v pacman    >/dev/null 2>&1; then
+    pacman -Sy --noconfirm curl tar
+elif command -v zypper    >/dev/null 2>&1; then
+    zypper --non-interactive install curl tar
+else
+    echo "Unsupported package manager. 请手动安装 curl 和 tar 后重试。"
+    exit 1
+fi
 
-# 1. 停止并禁用 systemd 服务
-if systemctl list-unit-files | grep -q '^frps\.service'; then
-  echo "⏹️ 停止 frps.service"
-  systemctl stop frps || true
-  echo "🔒 禁用 frps.service"
-  systemctl disable frps || true
-  echo "🗑️ 删除 /etc/systemd/system/frps.service"
-  rm -f /etc/systemd/system/frps.service
+# 2. 在 /opt 下创建隐藏目录 .varfrp 并设置权限
+OPT_DIR="/opt"
+FRP_DIR="$OPT_DIR/.varfrp"
+echo "创建目录 $FRP_DIR 并设置权限……"
+mkdir -p "$FRP_DIR"
+chown root:root "$FRP_DIR"
+chmod 755 "$FRP_DIR"
+
+# 3. 拉取最新版本的 FRP 并解压到 $FRP_DIR
+echo "检测 CPU 架构……"
+ARCH=$(uname -m)
+case "$ARCH" in
+  x86_64)   TARGET_ARCH="amd64" ;;
+  aarch64)  TARGET_ARCH="arm64" ;;
+  armv7l)   TARGET_ARCH="arm"   ;;
+  i386|i686)TARGET_ARCH="386"   ;;
+  *)        TARGET_ARCH="amd64" ;;
+esac
+
+echo "获取 FRP 最新版本下载链接……"
+DOWNLOAD_URL=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest \
+  | grep "browser_download_url.*linux_${TARGET_ARCH}\.tar\.gz" \
+  | head -n1 | cut -d '"' -f4)
+
+if [ -z "$DOWNLOAD_URL" ]; then
+  echo "无法获取 FRP 最新版本下载链接，退出。"
+  exit 1
+fi
+
+echo "下载并解压 FRP 到 $FRP_DIR ……"
+curl -fsSL "$DOWNLOAD_URL" -o /tmp/frp.tar.gz
+tar -xzf /tmp/frp.tar.gz -C "$FRP_DIR" --strip-components=1
+rm -f /tmp/frp.tar.gz
+
+# 4. 生成或替换 frps.toml
+echo "生成 frps.toml 配置文件……"
+cat > "$FRP_DIR/frps.toml" << 'EOF'
+bindPort = 39501
+kcpBindPort = 39501
+
+# 认证方式和令牌
+auth.method = "token"
+auth.token = "6F36@565%742#E97B57B0!F7BBAB4C0C7%E83002%C80A%06205#219%BBCC36DC19!5354A8%502039081724F8B%FBC71BF37093F114BEF2290E6F8&40D%64A32B3"
+
+allowPorts = [
+  { start = 39000, end = 40000 },
+  { single = 20568 }
+]
+EOF
+chown root:root "$FRP_DIR/frps.toml"
+chmod 644 "$FRP_DIR/frps.toml"
+
+# 5. 配置 systemd 服务
+if command -v systemctl >/dev/null 2>&1; then
+  echo "创建 systemd 单元文件 /etc/systemd/system/frps.service ……"
+  cat > /etc/systemd/system/frps.service << EOF
+[Unit]
+Description=FRP Server
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=$FRP_DIR
+ExecStart=$FRP_DIR/frps -c $FRP_DIR/frps.toml
+Restart=on-failure
+RestartSec=5s
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+  echo "重载 systemd 并启用、启动 frps 服务……"
   systemctl daemon-reload
+  systemctl enable frps
+  systemctl restart frps
+  echo "FRP 服务已启动，并设置为开机自启，故障将自动重启。"
+else
+  echo "未检测到 systemd，请手动配置开机自启（例如在 /etc/rc.local 中添加启动命令）。"
 fi
 
-# 2. 停止并禁用 frpc (if used)
-if systemctl list-unit-files | grep -q '^frpc\.service'; then
-  echo "⏹️ 停止 frpc.service"
-  systemctl stop frpc || true
-  echo "🔒 禁用 frpc.service"
-  systemctl disable frpc || true
-  echo "🗑️ 删除 /etc/systemd/system/frpc.service"
-  rm -f /etc/systemd/system/frpc.service
-  systemctl daemon-reload
-fi
-
-# 3. 杀掉所有正在运行的 frps/frpc 进程
-echo "⚔️ 杀掉所有 frps/frpc 进程"
-pkill -f frps || true
-pkill -f frpc || true
-
-# 4. 删除可执行文件
-echo "🗑️ 删除 /usr/local/bin/frps"
-rm -f /usr/local/bin/frps
-echo "🗑️ 删除 /usr/local/bin/frpc"
-rm -f /usr/local/bin/frpc
-
-# 5. 删除安装目录
-if [ -d "${HOME}/.varfrp" ]; then
-  echo "🗑️ 删除安装目录 ${HOME}/.varfrp"
-  rm -rf "${HOME}/.varfrp"
-fi
-
-# 6. 删除日志文件
-echo "🗑️ 删除 /var/log/frps.log"
-rm -f /var/log/frps.log || true
-echo "🗑️ 删除 /var/log/frpc.log"
-rm -f /var/log/frpc.log || true
-
-# 7. 清理防火墙规则（如果是 ufw/firewall-cmd/iptables 添加的范围规则）
-echo "🧹 清理防火墙规则（如存在）"
-if command -v ufw &>/dev/null; then
-  ufw delete allow 39000:40000/tcp || true
-  ufw delete allow 39000:40000/udp || true
-fi
-if command -v firewall-cmd &>/dev/null; then
-  firewall-cmd --remove-port=39000-40000/tcp || true
-  firewall-cmd --remove-port=39000-40000/udp || true
-fi
-# 对 iptables 规则，需手动调整索引或使用 iptables-save/restore
-# 提示用户手动清理
-echo "⚠️ 若使用 iptables 手动添加规则，请检查并删除对应 INPUT 规则："
-echo "   iptables -L INPUT --line-numbers | grep '39000:40000'"
-
-echo "✅ FRP 已全部卸载完成！"
+echo "=============================="
+echo "FRP 安装及配置完成！"
+echo "监控日志：journalctl -u frps -f"
