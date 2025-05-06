@@ -1,22 +1,23 @@
 #!/usr/bin/env bash
 #================================================================
-# FRP 服务端 (frps) 一键安装脚本 —— 使用 QUIC 控制通道（UDP 39501）
-# 控制端口调整到 39500–39501 范围，放行 39000–40000 端口
+# FRP 服务端 (frps) 一键安装脚本 —— 使用 QUIC 控制通道（UDP 39501），走 39500–39501 端口范围
 # 适用：Debian/Ubuntu, CentOS/RHEL, Alpine, Fedora…
 # 使用：curl -sL <脚本地址> | sudo bash
 #----------------------------------------------------------------
 # —— 配置区 ——
-FRP_VERSION=""                     # 指定版本 (留空自动拉取最新)
+FRP_VERSION=""                     # 指定版本（留空则自动拉取最新）
 INSTALL_DIR="${HOME}/.varfrp"      # 安装目录（隐藏）
-BIND_PORT=39500                    # QUIC 控制通道 TCP 端口（fallback）
-BIND_UDP_PORT=39501                # QUIC 控制通道 UDP 端口
-TOKEN="ChangeMeToAStrongToken123"  # 连接 Token，请务必改成强随机串
-ALLOW_PORTS="39502-39510"          # 允许映射的业务端口范围
-PROTOCOL="quic"                    # 控制协议：quic（基于 UDP 的 QUIC）
-TLS_ENABLE="true"                  # 必需启用 TLS (wss/quic 必须)
-# TLS 证书拉取 URL，请替换为你的域名证书
-TLS_CERT_URL="https://your.domain.com/fullchain.pem"
-TLS_KEY_URL="https://your.domain.com/privkey.pem"
+BIND_PORT=39500                     # 控制通道 TCP 端口（备用）
+BIND_UDP_PORT=39501                 # QUIC(UDP) 控制通道端口
+TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
+ALLOW_PORTS="39502-39510"         # 允许映射的业务端口范围
+PROTOCOL="quic"                   # 控制通道协议（tcp/kcp/quic/ws），quic 优先使用 UDP
+TLS_ENABLE="true"                 # 是否启用 TLS 加密（quic 必需）
+# TLS 证书拉取 URL，请替换为你的域名证书地址
+TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
+TLS_KEY_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
+TLS_CERT_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.crt"
+TLS_KEY_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.key"
 TLS_CERT="${INSTALL_DIR}/cert/frps.crt"
 TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 # —— 配置区结束 ——
@@ -26,9 +27,9 @@ set -euo pipefail
 
 detect_arch(){
   case "$(uname -m)" in
-    x86_64)    frp_arch=amd64 ;;
+    x86_64) frp_arch=amd64 ;;
     aarch64|arm64) frp_arch=arm64 ;;
-    armv7l)    frp_arch=armv7 ;;
+    armv7l) frp_arch=armv7 ;;
     *) echo "❌ 当前架构 $(uname -m) 不支持" >&2; exit 1 ;;
   esac
 }
@@ -40,9 +41,11 @@ get_latest_version(){
   echo "✅ 最新版本：$FRP_VERSION"
 }
 
-fetch_single(){
-  local url=$1 dest=$2
-  curl -fSL "$url" -o "$dest"
+fetch_cert(){
+  local url_main=$1 url_master=$2 dest=$3
+  if curl -fSL "$url_main" -o "$dest"; then return; fi
+  echo "⚠️ 从 main 分支拉取失败，尝试 master..."
+  curl -fSL "$url_master" -o "$dest"
 }
 
 main(){
@@ -65,19 +68,19 @@ main(){
 
   # 下载并解压 FRP
   pkg="frp_${FRP_VERSION#v}_linux_${frp_arch}.tar.gz"
-  echo "⏳ 下载 FRP: https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}"
+  echo "⏳ 下载 FRP：https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}"
   curl -sL "https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}" -o "$pkg"
   tar xzf "$pkg" --strip-components=1 && rm -f "$pkg"
 
   # 拉取 TLS 证书
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
-    fetch_single "$TLS_CERT_URL" "$TLS_CERT"
-    fetch_single "$TLS_KEY_URL"  "$TLS_KEY"
+    fetch_cert "$TLS_CERT_URL_MAIN" "$TLS_CERT_URL_MASTER" "$TLS_CERT"
+    fetch_cert "$TLS_KEY_URL_MAIN"  "$TLS_KEY_URL_MASTER"  "$TLS_KEY"
     echo "🔐 TLS 证书拉取完成"
   fi
 
-  # 生成 frps.toml（QUIC 控制通道）
+  # 生成 frps.toml
   cat > frps.toml <<-EOF
 [common]
 bind_addr      = "0.0.0.0"
@@ -87,6 +90,7 @@ token          = "$TOKEN"
 allow_ports    = "$ALLOW_PORTS"
 protocol       = "$PROTOCOL"
 
+# TLS 配置
 tls_enable     = true
 tls_cert_file  = "$TLS_CERT"
 tls_key_file   = "$TLS_KEY"
@@ -95,7 +99,7 @@ EOF
   # 安装可执行文件
   install -m755 frps /usr/local/bin/frps
 
-  # 放行防火墙端口 39000-40000（立即生效，无需重启）
+  # 放行防火墙端口范围 39000-40000（即时生效，无需重启）
   if command -v ufw >/dev/null; then
     ufw allow 39000:40000/tcp
     ufw allow 39000:40000/udp
@@ -107,7 +111,7 @@ EOF
     iptables -I INPUT -p udp --dport 39000:40000 -j ACCEPT
   fi
 
-  # 创建 systemd 服务并启动
+  # 创建并启用 systemd 服务
   cat > /etc/systemd/system/frps.service <<-EOF
 [Unit]
 Description=FRP Server (frps)
@@ -127,13 +131,11 @@ EOF
   systemctl daemon-reload
   systemctl enable --now frps
 
-  # 输出客户端示例
+  # 输出部署信息及客户端示例
   SERVER_IP=$(curl -s https://api.ipify.org)
-  echo -e "\n🎉 安装完成，QUIC 控制通道已监听 UDP $BIND_UDP_PORT！"
-  echo "• 配置：$INSTALL_DIR/frps.toml"
-  echo "• 日志：$INSTALL_DIR/frps.log"
-  echo "• 服务状态：systemctl status frps"
-  echo -e "\n👉 客户端 frpc.toml 例子（复制到 Windows）：\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39502\nremote_port = 39502\n"
+  echo -e "\n🎉 FRP 安装完成，QUIC 控制通道已监听 UDP $BIND_UDP_PORT！"
+  echo "• 查看状态：systemctl status frps"
+  echo -e "\n👉 客户端示例 frpc.toml:\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39502\nremote_port = 39502"
 }
 
 main "$@"
