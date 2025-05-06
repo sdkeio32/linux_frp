@@ -10,7 +10,7 @@ INSTALL_DIR="${HOME}/.varfrp"     # 安装目录（隐藏）
 BIND_PORT=39000                     # 控制通道 TCP 端口
 BIND_UDP_PORT=39001                 # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
-ALLOW_PORTS="39501-39600"         # 允许映射的业务端口范围
+ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
 TLS_ENABLE="true"                 # 是否启用 TLS 加密 (true/false)
 # 若启用 TLS，证书会从下面两条 URL 拉取，优先 main 分支，失败则尝试 master
 TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
@@ -66,7 +66,7 @@ main(){
   if systemctl list-unit-files | grep -Fq "frps.service"; then
     echo "ℹ️ 检测到已存在 frps.service，停止并禁用..."
     systemctl stop frps || true
-    systemctl disable frps || true
+    systemctl.disable frps || true
     rm -f /etc/systemd/system/frps.service
     systemctl daemon-reload
   fi
@@ -101,7 +101,7 @@ main(){
     echo "🔐 私钥文件下载成功：$TLS_KEY"
   fi
 
-  # 生成 frps.ini
+  # 生成 frps.ini，并优先使用 UDP，UDP 不可用时自动切换 TCP
   cat > "$INSTALL_DIR/frps.ini" <<-EOF
 [common]
 bind_addr      = 0.0.0.0
@@ -109,6 +109,8 @@ bind_port      = $BIND_PORT
 bind_udp_port  = $BIND_UDP_PORT
 token          = $TOKEN
 allow_ports    = $ALLOW_PORTS
+# 优先使用 UDP，当 UDP 不可用时回退到 TCP
+protocol       = udp
 EOF
 
   if [ "$TLS_ENABLE" = "true" ]; then
