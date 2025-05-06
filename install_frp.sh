@@ -1,4 +1,3 @@
-```bash
 #!/usr/bin/env bash
 #================================================================
 # FRP 服务端 (frps) 一键安装脚本 —— 使用 QUIC 控制通道（UDP 39501）
@@ -93,15 +92,16 @@ token          = "$TOKEN"
 allow_ports    = "$ALLOW_PORTS"
 protocol       = "$PROTOCOL"
 
+# TLS 配置
 tls_enable     = true
 tls_cert_file  = "$TLS_CERT"
 tls_key_file   = "$TLS_KEY"
 EOF
 
-  # 安装 frps
+  # 安装 frps 可执行文件
   install -m755 frps /usr/local/bin/frps
 
-  # 放行防火墙端口 39000-40000（即时生效，无需重启）
+  # 放行防火墙端口范围 39000-40000（即时生效）
   if command -v ufw >/dev/null; then
     ufw allow 39000:40000/tcp
     ufw allow 39000:40000/udp
@@ -113,7 +113,7 @@ EOF
     iptables -I INPUT -p udp --dport 39000:40000 -j ACCEPT
   fi
 
-  # 创建 systemd 服务
+  # 创建并启用 systemd 服务
   cat > /etc/systemd/system/frps.service <<-EOF
 [Unit]
 Description=FRP Server (frps)
@@ -135,11 +135,9 @@ EOF
 
   # 输出客户端示例
   SERVER_IP=$(curl -s https://api.ipify.org)
-  echo -e "\n🎉 FRP 安装完成！QUIC 控制通道监听 UDP $BIND_UDP_PORT。"
+  echo -e "\n🎉 FRP 安装完成！QUIC 控制通道已监听 UDP $BIND_UDP_PORT。"
   echo "• 查看状态：systemctl status frps"
   echo -e "\n👉 客户端示例 frpc.toml:\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39502\nremote_port = 39502"
 }
 
 main "$@"
-```
-
