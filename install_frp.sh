@@ -12,7 +12,7 @@ BIND_UDP_PORT=39001                 # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
 TLS_ENABLE="true"                 # 是否启用 TLS 加密 (true/false)
-# 若启用 TLS，证书会从下面两条 URL 拉取，请确保 URL 正确
+# 若启用 TLS，证书会从下面两条 URL 拉取
 TLS_CERT_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
 TLS_KEY_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
 TLS_CERT="${INSTALL_DIR}/cert/frps.crt"
@@ -21,21 +21,6 @@ TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 #================================================================
 
 set -euo pipefail
-
-# 清理旧安装，如果检测到目录或服务
-cleanup_old(){
-  if [ -d "$INSTALL_DIR" ]; then
-    echo "ℹ️ 检测到已存在安装目录 $INSTALL_DIR，正在删除旧版本..."
-    rm -rf "$INSTALL_DIR"
-  fi
-  if systemctl list-unit-files | grep -Fq "frps.service"; then
-    echo "ℹ️ 检测到已存在 frps.service，停止并禁用..."
-    systemctl stop frps || true
-    systemctl disable frps || true
-    rm -f /etc/systemd/system/frps.service
-    systemctl daemon-reload
-  fi
-}
 
 # 检测 CPU 架构，映射 FRP 下载包名
 detect_arch(){
@@ -56,25 +41,24 @@ get_latest_version(){
   echo "✅ 最新版本：$FRP_VERSION"
 }
 
-# 从 URL 拉取文件并验证
-fetch_cert(){
-  local url="$1" out="$2"
-  echo "⏳ 正在拉取证书 $url ..."
-  if ! curl -s --fail "$url" -o "$out"; then
-    echo "❌ 无法拉取证书：$url" >&2
-    return 1
-  fi
-  if [ ! -s "$out" ]; then
-    echo "❌ 拉取的文件为空：$out" >&2
-    return 1
-  fi
-  echo "✅ 证书已保存：$out"
-}
-
 main(){
   [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
 
-  cleanup_old
+  # 如果目录已存在，则视为重装，删除旧目录
+  if [ -d "$INSTALL_DIR" ]; then
+    echo "ℹ️ 检测到已存在安装目录 $INSTALL_DIR，正在删除旧版本..."
+    rm -rf "$INSTALL_DIR"
+  fi
+
+  # 如果已注册 systemd 服务，则停止、禁用并移除旧服务文件
+  if systemctl list-unit-files | grep -Fq "frps.service"; then
+    echo "ℹ️ 检测到已存在 frps.service，停止并禁用..."
+    systemctl stop frps || true
+    systemctl disable frps || true
+    rm -f /etc/systemd/system/frps.service
+    systemctl daemon-reload
+  fi
+
   detect_arch
 
   # 版本处理
@@ -90,7 +74,7 @@ main(){
   # 下载并解压
   pkg="frp_${FRP_VERSION#v}_linux_${frp_arch}.tar.gz"
   url="https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}"
-  echo "⏳ 下载 FRP：${url}"
+  echo "⏳ 下载FRP：${url}"
   curl -sL "$url" -o "$pkg"
   tar zxvf "$pkg" --strip-components=1
   rm -f "$pkg"
@@ -98,15 +82,10 @@ main(){
   # TLS 证书：从 GitHub 仓库拉取固定证书
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
-    if ! fetch_cert "$TLS_CERT_URL" "$TLS_CERT" || ! fetch_cert "$TLS_KEY_URL" "$TLS_KEY"; then
-      echo "⚠️ 证书拉取失败，回退为随机生成自签证书..."
-      openssl req -x509 -nodes -days 365 \
-        -newkey rsa:2048 \
-        -keyout "$TLS_KEY" \
-        -out    "$TLS_CERT" \
-        -subj   "/CN=frp.server"
-      echo "🔐 随机生成自签证书：$TLS_CERT + $TLS_KEY"
-    fi
+    echo "⏳ 拉取固定 TLS 证书..."
+    curl -fSL "$TLS_CERT_URL" -o "$TLS_CERT"
+    curl -fSL "$TLS_KEY_URL" -o "$TLS_KEY"
+    echo "🔐 TLS 证书已拉取：$TLS_CERT + $TLS_KEY"
   fi
 
   # 生成 frps.ini
