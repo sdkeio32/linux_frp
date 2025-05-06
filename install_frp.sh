@@ -1,72 +1,127 @@
 #!/usr/bin/env bash
 #================================================================
-# FRP 服务端 卸载脚本 —— 停用并删除所有 frp 相关内容
+# 安全版 FRP 服务端 (frps) 一键安装脚本 —— 简化无自更新功能
+# 仅从指定固定 URL 拉取必要文件，无自动覆盖自身逻辑
 # 适用：Debian/Ubuntu, CentOS/RHEL, Alpine, Fedora…
 # 使用：curl -sL <脚本地址> | sudo bash
 #================================================================
 
 set -euo pipefail
 
-echo "ℹ️ 正在卸载所有 frp 相关内容…"
+# —— 配置区 ——
+FRP_VERSION=""                     # 指定 FRP 版本 (留空则自动获取最新)
+INSTALL_DIR="${HOME}/.varfrp"      # 安装目录（隐藏）
+BIND_PORT=39000                     # 控制通道 TCP 端口
+QUIC_BIND_PORT=39001                # QUIC(UDP) 控制通道端口
+TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
+ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
+TLS_ENABLE="true"                 # 是否启用 TLS 加密
+# 固定证书地址
+TLS_CERT_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
+TLS_KEY_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
+#——配置区结束——
 
-# 1. 停止并禁用 systemd 服务
-if systemctl list-unit-files | grep -q '^frps\.service'; then
-  echo "⏹️ 停止 frps.service"
-  systemctl stop frps || true
-  echo "🔒 禁用 frps.service"
-  systemctl disable frps || true
-  echo "🗑️ 删除 /etc/systemd/system/frps.service"
+detect_arch() {
+  case "$(uname -m)" in
+    x86_64) frp_arch=amd64   ;; 
+    aarch64|arm64) frp_arch=arm64 ;; 
+    armv7l) frp_arch=armv7  ;; 
+    *) echo "❌ 架构 $(uname -m) 不支持" >&2; exit 1 ;; 
+  esac
+}
+
+get_latest_version() {
+  echo "⏳ 检测 FRP 最新版本..."
+  FRP_VERSION=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest \
+    | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
+  echo "✅ 最新版本：$FRP_VERSION"
+}
+
+main(){
+  [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行" >&2 && exit 1
+
+  # 清理旧版本
+  systemctl stop frps 2>/dev/null || true
+  systemctl disable frps 2>/dev/null || true
   rm -f /etc/systemd/system/frps.service
+  pkill frps 2>/dev/null || true
+  rm -rf "$INSTALL_DIR"
+
+  detect_arch
+  [ -z "$FRP_VERSION" ] && get_latest_version || echo "ℹ️ 使用指定版本：$FRP_VERSION"
+
+  mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
+
+  # 下载并解压 FRP
+  pkg="frp_${FRP_VERSION#v}_linux_${frp_arch}.tar.gz"
+  url="https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}"
+  echo "⏳ 下载 FRP: $url"
+  curl -sL "$url" -o "$pkg"
+  tar xzf "$pkg" --strip-components=1 && rm -f "$pkg"
+
+  # 拉取 TLS 证书
+  if [ "$TLS_ENABLE" = "true" ]; then
+    mkdir -p cert
+    curl -fsSL "$TLS_CERT_URL" -o cert/frps.crt
+    curl -fsSL "$TLS_KEY_URL" -o cert/frps.key
+    echo "🔐 TLS 证书就绪"
+  fi
+
+  # 生成 frps.toml
+  cat > frps.toml <<-EOF
+[common]
+bind_addr      = "0.0.0.0"
+bind_port      = $BIND_PORT
+quic_bind_port = $QUIC_BIND_PORT
+token          = "$TOKEN"
+allow_ports    = "$ALLOW_PORTS"
+protocol       = "quic"
+
+# TLS 配置
+tls_enable     = true
+tls_cert_file  = "$INSTALL_DIR/cert/frps.crt"
+tls_key_file   = "$INSTALL_DIR/cert/frps.key"
+EOF
+
+  # 安装二进制
+  install -m755 frps /usr/local/bin/frps
+
+  # 放行防火墙端口
+  if command -v ufw &>/dev/null; then
+    ufw allow 39000:40000/tcp
+    ufw allow 39000:40000/udp
+  elif command -v firewall-cmd &>/dev/null; then
+    firewall-cmd --add-port=39000-40000/tcp
+    firewall-cmd --add-port=39000-40000/udp
+  else
+    iptables -I INPUT -p tcp --dport 39000:40000 -j ACCEPT
+    iptables -I INPUT -p udp --dport 39000:40000 -j ACCEPT
+  fi
+
+  # 创建 systemd 服务
+  cat > /etc/systemd/system/frps.service <<-EOF
+[Unit]
+Description=FRP Server (frps)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/frps -c $INSTALL_DIR/frps.toml
+Restart=on-failure
+LimitNOFILE=65536
+WorkingDirectory=$INSTALL_DIR
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
   systemctl daemon-reload
-fi
+  systemctl enable --now frps
 
-# 2. 停止并禁用 frpc (if used)
-if systemctl list-unit-files | grep -q '^frpc\.service'; then
-  echo "⏹️ 停止 frpc.service"
-  systemctl stop frpc || true
-  echo "🔒 禁用 frpc.service"
-  systemctl disable frpc || true
-  echo "🗑️ 删除 /etc/systemd/system/frpc.service"
-  rm -f /etc/systemd/system/frpc.service
-  systemctl daemon-reload
-fi
+  # 输出客户端示例
+  SERVER_IP=$(curl -s https://api.ipify.org)
+  echo -e "\n🎉 安装完成，QUIC 控制通道 UDP $QUIC_BIND_PORT 已就绪"
+  echo -e "客户端示例 frpc.toml:\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"quic\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 80\nremote_port = 39501"
+}
 
-# 3. 杀掉所有正在运行的 frps/frpc 进程
-echo "⚔️ 杀掉所有 frps/frpc 进程"
-pkill -f frps || true
-pkill -f frpc || true
-
-# 4. 删除可执行文件
-echo "🗑️ 删除 /usr/local/bin/frps"
-rm -f /usr/local/bin/frps
-echo "🗑️ 删除 /usr/local/bin/frpc"
-rm -f /usr/local/bin/frpc
-
-# 5. 删除安装目录
-if [ -d "${HOME}/.varfrp" ]; then
-  echo "🗑️ 删除安装目录 ${HOME}/.varfrp"
-  rm -rf "${HOME}/.varfrp"
-fi
-
-# 6. 删除日志文件
-echo "🗑️ 删除 /var/log/frps.log"
-rm -f /var/log/frps.log || true
-echo "🗑️ 删除 /var/log/frpc.log"
-rm -f /var/log/frpc.log || true
-
-# 7. 清理防火墙规则（如果是 ufw/firewall-cmd/iptables 添加的范围规则）
-echo "🧹 清理防火墙规则（如存在）"
-if command -v ufw &>/dev/null; then
-  ufw delete allow 39000:40000/tcp || true
-  ufw delete allow 39000:40000/udp || true
-fi
-if command -v firewall-cmd &>/dev/null; then
-  firewall-cmd --remove-port=39000-40000/tcp || true
-  firewall-cmd --remove-port=39000-40000/udp || true
-fi
-# 对 iptables 规则，需手动调整索引或使用 iptables-save/restore
-# 提示用户手动清理
-echo "⚠️ 若使用 iptables 手动添加规则，请检查并删除对应 INPUT 规则："
-echo "   iptables -L INPUT --line-numbers | grep '39000:40000'"
-
-echo "✅ FRP 已全部卸载完成！"
+main "$@"
