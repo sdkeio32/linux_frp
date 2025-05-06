@@ -7,8 +7,8 @@
 # —— 配置区 —— （在此修改后上传到 GitHub，即可一键在各系统部署）
 FRP_VERSION=""                    # 指定版本 (e.g. v0.62.1)，留空则自动拉取最新
 INSTALL_DIR="${HOME}/.varfrp"     # 安装目录（隐藏）
-BIND_PORT=39000                   # 控制通道 TCP 端口
-BIND_UDP_PORT=39001               # UDP 打洞端口
+BIND_PORT=39000                     # 控制通道 TCP 端口
+BIND_UDP_PORT=39001                 # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
 TLS_ENABLE="true"                 # 是否启用 TLS 加密 (true/false)
@@ -43,6 +43,22 @@ get_latest_version(){
 
 main(){
   [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
+
+  # 如果目录已存在，则视为重装，删除旧目录
+  if [ -d "$INSTALL_DIR" ]; then
+    echo "ℹ️ 检测到已存在安装目录 $INSTALL_DIR，正在删除旧版本..."
+    rm -rf "$INSTALL_DIR"
+  fi
+
+  # 如果已注册 systemd 服务，则停止、禁用并移除旧服务文件
+  if systemctl list-unit-files | grep -Fq "frps.service"; then
+    echo "ℹ️ 检测到已存在 frps.service，停止并禁用..."
+    systemctl stop frps || true
+    systemctl disable frps || true
+    rm -f /etc/systemd/system/frps.service
+    systemctl daemon-reload
+  fi
+
   detect_arch
 
   # 版本处理
