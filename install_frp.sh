@@ -12,7 +12,9 @@ BIND_UDP_PORT=39001               # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
 TLS_ENABLE="true"                 # 是否启用 TLS 加密 (true/false)
-# 若启用 TLS，证书会自动生成到下面这两个路径
+# 若启用 TLS，证书会从下面两条 URL 拉取
+TLS_CERT_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
+TLS_KEY_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
 TLS_CERT="${INSTALL_DIR}/cert/frps.crt"
 TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 # —— 配置区结束 ——
@@ -61,15 +63,13 @@ main(){
   tar zxvf "$pkg" --strip-components=1
   rm -f "$pkg"
 
-  # TLS 证书
+  # TLS 证书：从 GitHub 仓库拉取固定证书
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
-    openssl req -x509 -nodes -days 365 \
-      -newkey rsa:2048 \
-      -keyout "$TLS_KEY" \
-      -out    "$TLS_CERT" \
-      -subj   "/CN=frp.server"
-    echo "🔐 TLS 证书生成：$TLS_CERT + $TLS_KEY"
+    echo "⏳ 拉取固定 TLS 证书..."
+    curl -sL "$TLS_CERT_URL" -o "$TLS_CERT"
+    curl -sL "$TLS_KEY_URL" -o "$TLS_KEY"
+    echo "🔐 TLS 证书已拉取：$TLS_CERT + $TLS_KEY"
   fi
 
   # 生成 frps.ini
@@ -84,6 +84,7 @@ EOF
 
   if [ "$TLS_ENABLE" = "true" ]; then
     cat >> "$INSTALL_DIR/frps.ini" <<-EOF
+
 tls_enable     = true
 tls_cert_file  = $TLS_CERT
 tls_key_file   = $TLS_KEY
