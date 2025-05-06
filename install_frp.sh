@@ -54,6 +54,9 @@ fetch_cert(){
 main(){
   [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
 
+  # 自动获取服务器公网IP
+  SERVER_IP=$(curl -s https://api.ipify.org)
+
   # 停止并清理旧服务
   if systemctl is-active --quiet frps; then
     echo "ℹ️ 停止旧的 frps 服务..."
@@ -136,7 +139,7 @@ EOF
   echo "  • 配置文件：$INSTALL_DIR/frps.toml"
   echo "  • 日志目录：$INSTALL_DIR/frps.log"
   echo "  • 启动命令：systemctl status frps"
-  echo -e "\n👉 客户端示例 frpc.toml:\n[common]\nserver_addr = \"<服务器IP>\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39501\nremote_port = 39501"
+  echo -e "\n👉 客户端示例 frpc.toml:\n[common]\nserver_addr = \"$SERVER_IP\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39501\nremote_port = 39501"
 }
 
 main "$@"
