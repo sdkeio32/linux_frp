@@ -4,7 +4,7 @@
 # 适用：Debian/Ubuntu, CentOS/RHEL, Alpine, Fedora…
 # 使用：curl -sL <脚本地址> | sudo bash
 #----------------------------------------------------------------
-# —— 配置区 —— （在此修改后上传到 GitHub，即可一键在各系统部署）
+# —— 配置区 ——
 FRP_VERSION=""                     # 指定版本 (e.g. v0.62.1)，留空则自动拉取最新
 INSTALL_DIR="${HOME}/.varfrp"      # 安装目录（隐藏）
 BIND_PORT=39000                      # 控制通道 TCP 端口
@@ -13,7 +13,7 @@ TOKEN="ChangeMeToAStrongToken123"  # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"          # 允许映射的业务端口范围
 PROTOCOL="kcp"                     # 控制通道协议（tcp/kcp/quic/ws），kcp 即优先使用 UDP
 TLS_ENABLE="true"                  # 是否启用 TLS 加密 (true/false)
-# 若启用 TLS，证书会从下面两条 URL 拉取，优先 main 分支，失败则尝试 master
+# 若启用 TLS，证书拉取 URL
 TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
 TLS_KEY_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
 TLS_CERT_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.crt"
@@ -25,100 +25,95 @@ TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 
 set -euo pipefail
 
-# 检测 CPU 架构，映射 FRP 下载包名
+# 检测 CPU 架构
 detect_arch(){
   arch=$(uname -m)
   case "$arch" in
     x86_64) frp_arch=amd64 ;;
     aarch64|arm64) frp_arch=arm64 ;;
     armv7l) frp_arch=armv7 ;;
-    *) echo "❌ 当前架构 $arch 不受支持" >&2; exit 1 ;;
+    *) echo "❌ 当前架构 $arch 不支持" >&2; exit 1 ;;
   esac
 }
 
-# 拉取最新 Release Tag
+# 拉取最新版本
 get_latest_version(){
-  echo "⏳ 检测 FRP 最新版本..."
   FRP_VERSION=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest \
-    | grep '"tag_name"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
+    | grep '"tag_name"' | head -1 | sed -E 's/.*"([^"]+)".*/\1/')
   echo "✅ 最新版本：$FRP_VERSION"
 }
 
-# 下载证书，支持 main/master 分支
+# 下载证书
 fetch_cert(){
-  local url_main=$1 url_master=$2 dest=$3
-  if curl -fSL "$url_main" -o "$dest"; then return; fi
-  echo "⚠️ 从 main 分支下载失败，尝试 master 分支..."
-  curl -fSL "$url_master" -o "$dest"
+  local main_url=$1 master_url=$2 dest=$3
+  if curl -fSL "$main_url" -o "$dest"; then return; fi
+  curl -fSL "$master_url" -o "$dest"
 }
 
 main(){
-  [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
+  [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo" >&2 && exit 1
 
-  # 重装清理
-  if [ -d "$INSTALL_DIR" ]; then
-    echo "ℹ️ 检测到已存在安装目录 $INSTALL_DIR，正在删除旧版本..."
-    rm -rf "$INSTALL_DIR"
+  # 停止并清理旧服务
+  if systemctl is-active --quiet frps; then
+    echo "ℹ️ 停止旧的 frps 服务..."
+    systemctl stop frps
   fi
-  # 清理旧服务
-  if systemctl list-unit-files | grep -Fq "frps.service"; then
-    echo "ℹ️ 停止并移除旧的 frps.service..."
-    systemctl stop frps || true
-    systemctl disable frps || true
+  if systemctl list-unit-files | grep -Fq frps.service; then
+    echo "ℹ️ 禁用并删除旧的 systemd 单元..."
+    systemctl disable frps
     rm -f /etc/systemd/system/frps.service
     systemctl daemon-reload
   fi
+  # 强制杀掉旧进程
+  pkill frps || true
+
+  # 删除旧目录和配置
+  if [ -d "$INSTALL_DIR" ]; then
+    echo "ℹ️ 删除旧目录 $INSTALL_DIR ..."
+    rm -rf "$INSTALL_DIR"
+  fi
 
   detect_arch
-  [ -z "${FRP_VERSION}" ] && get_latest_version || echo "ℹ️ 使用指定版本：$FRP_VERSION"
+  [ -z "$FRP_VERSION" ] && echo "⏳ 检测最新版本..." && get_latest_version || echo "ℹ️ 使用指定版本：$FRP_VERSION"
 
   mkdir -p "$INSTALL_DIR" && cd "$INSTALL_DIR"
 
   # 下载并解压
   pkg="frp_${FRP_VERSION#v}_linux_${frp_arch}.tar.gz"
-  url="https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}"
-  echo "⏳ 下载 FRP：${url}"
-  curl -sL "$url" -o "$pkg"
-  tar zxvf "$pkg" --strip-components=1
-  rm -f "$pkg"
+  curl -sL "https://github.com/fatedier/frp/releases/download/${FRP_VERSION}/${pkg}" -o "$pkg"
+  tar xzf "$pkg" --strip-components=1 && rm -f "$pkg"
 
-  # 拉取 TLS 证书
+  # 获取 TLS 证书
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
-    echo "⏳ 拉取 TLS 证书..."
     fetch_cert "$TLS_CERT_URL_MAIN" "$TLS_CERT_URL_MASTER" "$TLS_CERT"
     fetch_cert "$TLS_KEY_URL_MAIN"  "$TLS_KEY_URL_MASTER"  "$TLS_KEY"
-    echo "🔐 已下载 TLS 证书和私钥"
+    echo "🔐 TLS 证书就绪"
   fi
 
-  # 生成 frps.toml
-  cat > "$INSTALL_DIR/frps.toml" <<-EOF
+  # 删除旧 ini，生成 TOML
+  rm -f "$INSTALL_DIR/frps.ini"
+  cat > frps.toml <<-EOF
 [common]
 bind_addr = "0.0.0.0"
 bind_port = $BIND_PORT
 bind_udp_port = $BIND_UDP_PORT
 token = "$TOKEN"
 allow_ports = "$ALLOW_PORTS"
-# 控制通道协议，优先使用 UDP (KCP)
 protocol = "$PROTOCOL"
 EOF
-
-  if [ "$TLS_ENABLE" = "true" ]; then
-    cat >> "$INSTALL_DIR/frps.toml" <<-EOF
+  [ "$TLS_ENABLE" = "true" ] && cat >> frps.toml <<-EOF
 
 tls_enable = true
 tls_cert_file = "$TLS_CERT"
 tls_key_file = "$TLS_KEY"
 EOF
-  fi
 
-  # 安装可执行文件
-  install -m 755 "$INSTALL_DIR/frps" /usr/local/bin/frps
-
-  # 创建 systemd 服务
+  # 安装并注册服务
+  install -m755 frps /usr/local/bin/frps
   cat > /etc/systemd/system/frps.service <<-EOF
 [Unit]
-Description=FRP Server (frps)
+Description=frp Server (frps)
 After=network.target
 
 [Service]
@@ -131,30 +126,15 @@ WorkingDirectory=$INSTALL_DIR
 [Install]
 WantedBy=multi-user.target
 EOF
-
   systemctl daemon-reload
-  systemctl enable --now frps
+  systemctl enable frps
+  systemctl restart frps
 
-  echo -e "\n🎉 FRP 服务端 安装完成！"
-  echo "  • 配置文件：$INSTALL_DIR/frps.toml"
-  echo "  • 日志目录：$INSTALL_DIR/frps.log"
-  echo "  • 启动命令：systemctl status frps"
-  echo
-  echo "👉 客户端 (frpc) 示例配置文件内容："
-  cat <<-EOT
-# frpc.toml 示例
-[common]
-server_addr = "<服务器IP>"
-server_port = $BIND_PORT
-token = "$TOKEN"
-protocol = "$PROTOCOL"
-
-[example]
-type = "tcp"
-local_ip = "127.0.0.1"
-local_port = 39501
-remote_port = 39501
-EOT
+  echo -e "\n🎉 FRP 安装完成"
+  echo "配置文件: $INSTALL_DIR/frps.toml"
+  echo "日志: $INSTALL_DIR/frps.log"
+  echo "服务: systemctl status frps"
+  echo -e "\n# 客户端示例 frpc.toml:\n[common]\nserver_addr = \"<服务器IP>\"\nserver_port = $BIND_PORT\ntoken = \"$TOKEN\"\nprotocol = \"$PROTOCOL\"\n\n[example]\ntype = \"tcp\"\nlocal_ip = \"127.0.0.1\"\nlocal_port = 39501\nremote_port = 39501"
 }
 
 main "$@"
