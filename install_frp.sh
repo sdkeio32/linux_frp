@@ -10,11 +10,13 @@ INSTALL_DIR="${HOME}/.varfrp"     # 安装目录（隐藏）
 BIND_PORT=39000                     # 控制通道 TCP 端口
 BIND_UDP_PORT=39001                 # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123" # 连接 Token，请务必改成强随机串
-ALLOW_PORTS="39501-39510"         # 允许映射的业务端口范围
+ALLOW_PORTS="39501-39600"         # 允许映射的业务端口范围
 TLS_ENABLE="true"                 # 是否启用 TLS 加密 (true/false)
-# 若启用 TLS，证书会从下面两条 URL 拉取
-TLS_CERT_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
-TLS_KEY_URL="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
+# 若启用 TLS，证书会从下面两条 URL 拉取，优先 main 分支，失败则尝试 master
+TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
+TLS_KEY_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
+TLS_CERT_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.crt"
+TLS_KEY_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.key"
 TLS_CERT="${INSTALL_DIR}/cert/frps.crt"
 TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 # —— 配置区结束 ——
@@ -39,6 +41,16 @@ get_latest_version(){
   FRP_VERSION=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest \
     | grep '"tag_name"' | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
   echo "✅ 最新版本：$FRP_VERSION"
+}
+
+# 下载证书，支持 main/master 分支
+fetch_cert(){
+  local url_main=$1 url_master=$2 dest=$3
+  if curl -fSL "$url_main" -o "$dest"; then
+    return 0
+  fi
+  echo "⚠️ 从 main 分支下载失败，尝试 master 分支..."
+  curl -fSL "$url_master" -o "$dest"
 }
 
 main(){
@@ -83,9 +95,10 @@ main(){
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
     echo "⏳ 拉取固定 TLS 证书..."
-    curl -fSL "$TLS_CERT_URL" -o "$TLS_CERT"
-    curl -fSL "$TLS_KEY_URL" -o "$TLS_KEY"
-    echo "🔐 TLS 证书已拉取：$TLS_CERT + $TLS_KEY"
+    fetch_cert "$TLS_CERT_URL_MAIN" "$TLS_CERT_URL_MASTER" "$TLS_CERT"
+    echo "🔐 证书文件下载成功：$TLS_CERT"
+    fetch_cert "$TLS_KEY_URL_MAIN"  "$TLS_KEY_URL_MASTER"  "$TLS_KEY"
+    echo "🔐 私钥文件下载成功：$TLS_KEY"
   fi
 
   # 生成 frps.ini
