@@ -5,15 +5,15 @@
 # 使用：curl -sL <脚本地址> | sudo bash
 #----------------------------------------------------------------
 # —— 配置区 ——
-FRP_VERSION=""                     # 指定版本 (e.g. v0.62.1)，留空则自动拉取最新
+FRP_VERSION=""                     # 指定版本 (留空则自动拉取最新)
 INSTALL_DIR="${HOME}/.varfrp"      # 安装目录（隐藏）
-BIND_PORT=39000                      # 控制通道 TCP 端口
-BIND_UDP_PORT=39001                  # KCP(UDP) 控制通道端口
+BIND_PORT=39000                    # 控制通道 TCP 端口
+BIND_UDP_PORT=39001                # KCP(UDP) 控制通道端口
 TOKEN="ChangeMeToAStrongToken123"  # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"          # 允许映射的业务端口范围
 PROTOCOL="kcp"                     # 控制通道协议（tcp/kcp/quic/ws），kcp 优先使用 UDP
 TLS_ENABLE="true"                  # 是否启用 TLS 加密 (true/false)
-# 若启用 TLS，证书拉取 URL
+# TLS 证书拉取 URL
 TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
 TLS_KEY_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.key"
 TLS_CERT_URL_MASTER="https://raw.githubusercontent.com/sdkeio32/linux_frp/master/frps.crt"
@@ -25,17 +25,15 @@ TLS_KEY="${INSTALL_DIR}/cert/frps.key"
 
 set -euo pipefail
 
-# 检测 CPU 架构
 detect_arch(){
   case "$(uname -m)" in
-    x86_64) frp_arch=amd64 ;;
+    x86_64)    frp_arch=amd64 ;;
     aarch64|arm64) frp_arch=arm64 ;;
-    armv7l) frp_arch=armv7 ;;
+    armv7l)    frp_arch=armv7 ;;
     *) echo "❌ 当前架构 $(uname -m) 不支持" >&2; exit 1 ;;
   esac
 }
 
-# 获取最新版本
 get_latest_version(){
   echo "⏳ 检测 FRP 最新版本..."
   FRP_VERSION=$(curl -s https://api.github.com/repos/fatedier/frp/releases/latest \
@@ -43,38 +41,28 @@ get_latest_version(){
   echo "✅ 最新版本：$FRP_VERSION"
 }
 
-# 拉取证书
 fetch_cert(){
-  local main_url=$1 master_url=$2 dest=$3
-  if curl -fSL "$main_url" -o "$dest"; then return; fi
-  echo "⚠️ 从 main 分支下载失败，尝试 master 分支..."
-  curl -fSL "$master_url" -o "$dest"
+  local m=$1 M=$2 d=$3
+  if curl -fSL "$m" -o "$d"; then return; fi
+  echo "⚠️ 从 main 分支下载失败，尝试 master..."
+  curl -fSL "$M" -o "$d"
 }
 
 main(){
   [ "$EUID" -ne 0 ] && echo "请使用 root 或 sudo 运行此脚本" >&2 && exit 1
 
-  # 自动获取服务器公网IP
+  # 获取服务器公网 IP
   SERVER_IP=$(curl -s https://api.ipify.org)
 
   # 停止并清理旧服务
-  if systemctl is-active --quiet frps; then
-    echo "ℹ️ 停止旧的 frps 服务..."
-    systemctl stop frps
-  fi
+  systemctl is-active --quiet frps && systemctl stop frps
   if systemctl list-unit-files | grep -Fq frps.service; then
-    echo "ℹ️ 禁用并删除旧的 systemd 单元..."
     systemctl disable frps
     rm -f /etc/systemd/system/frps.service
     systemctl daemon-reload
   fi
   pkill frps || true
-
-  # 清理旧目录
-  if [ -d "$INSTALL_DIR" ]; then
-    echo "ℹ️ 删除旧目录 $INSTALL_DIR"
-    rm -rf "$INSTALL_DIR"
-  fi
+  rm -rf "$INSTALL_DIR"
 
   detect_arch
   [ -z "$FRP_VERSION" ] && get_latest_version || echo "ℹ️ 使用指定版本：$FRP_VERSION"
@@ -90,7 +78,6 @@ main(){
   # 拉取 TLS 证书
   if [ "$TLS_ENABLE" = "true" ]; then
     mkdir -p "$(dirname "$TLS_CERT")"
-    echo "⏳ 拉取 TLS 证书..."
     fetch_cert "$TLS_CERT_URL_MAIN" "$TLS_CERT_URL_MASTER" "$TLS_CERT"
     fetch_cert "$TLS_KEY_URL_MAIN"  "$TLS_KEY_URL_MASTER"  "$TLS_KEY"
     echo "🔐 TLS 证书下载完成"
