@@ -11,6 +11,7 @@ BIND_PORT=39000                      # 控制通道 TCP 端口
 BIND_UDP_PORT=39001                  # UDP 打洞端口
 TOKEN="ChangeMeToAStrongToken123"  # 连接 Token，请务必改成强随机串
 ALLOW_PORTS="39501-39510"          # 允许映射的业务端口范围
+PROTOCOL="kcp"                     # 控制通道协议（tcp/kcp/quic/ws），kcp 即优先使用 UDP
 TLS_ENABLE="true"                  # 是否启用 TLS 加密 (true/false)
 # 若启用 TLS，证书会从下面两条 URL 拉取，优先 main 分支，失败则尝试 master
 TLS_CERT_URL_MAIN="https://raw.githubusercontent.com/sdkeio32/linux_frp/main/frps.crt"
@@ -98,8 +99,8 @@ bind_port = $BIND_PORT
 bind_udp_port = $BIND_UDP_PORT
 token = "$TOKEN"
 allow_ports = "$ALLOW_PORTS"
-# 优先使用 UDP，当 UDP 不可用时回退到 TCP
-protocol = "udp"
+# 控制通道协议，优先使用 UDP (KCP)
+protocol = "$PROTOCOL"
 EOF
 
   if [ "$TLS_ENABLE" = "true" ]; then
@@ -146,12 +147,12 @@ EOF
 server_addr = "<服务器IP>"
 server_port = $BIND_PORT
 token = "$TOKEN"
-protocol = "udp"
+protocol = "$PROTOCOL"
 
 [example]
 type = "tcp"
 local_ip = "127.0.0.1"
-local_port = 80
+local_port = 39501
 remote_port = 39501
 EOT
 }
